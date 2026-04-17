@@ -18,7 +18,17 @@ export const registerUser = async ({ name, email, password, role }) => {
     role,
   });
 
-  return user;
+  // 🔥 GENERATE TOKEN (ADD THIS)
+  const token = jwt.sign(
+    {
+      id: user._id,
+      role: user.role,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  return { user, token }; // ✅ return both
 };
 
 export const loginUser = async ({ email, password }) => {
