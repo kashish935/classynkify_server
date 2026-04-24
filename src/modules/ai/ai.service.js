@@ -1,8 +1,6 @@
 import OpenAI from "openai";
 
 export const askDoubtSolver = async (question, courseContext) => {
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY }); // ← moved here
-
   const prompt = courseContext
     ? `Course context: ${courseContext}\n\nStudent question: ${question}`
     : question;
