@@ -1,21 +1,17 @@
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export const askDoubtSolver = async (question, courseContext) => {
   const prompt = courseContext
     ? `Course context: ${courseContext}\n\nStudent question: ${question}`
     : question;
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content:
-          "You are a helpful academic tutor for an online LMS called Classynkify. Give clear, concise, student-friendly answers.",
-      },
-      { role: "user", content: prompt },
-    ],
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    systemInstruction: "You are a helpful academic tutor for an online LMS called Classynkify. Give clear, concise, student-friendly answers.",
   });
 
-  return completion.choices[0].message.content;
+  const result = await model.generateContent(prompt);
+  return result.response.text();
 };
