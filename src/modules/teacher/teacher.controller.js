@@ -1,150 +1,232 @@
 import Course from '../course/course.model.js'
+import Enrollment from '../enrollment/enrollment.model.js'
+import Assignment from '../assignment/assignment.model.js'
+import Submission from '../assignment/submission.model.js'
+import { calcProgress, isValidId } from '../enrollment/enrollment.service.js'
 
-// ── POST /api/teacher/courses ─────────────────────────────────────────────────
-export const createCourse = async (req, res) => {
-  try {
-    // Accept both schema names (category) and legacy form names (subject/grade/duration/language)
-    const { title, description, subject, grade, duration, language, category, price, isFree, tags } = req.body
+const teacherId = (req) => req.user.id
 
-    if (!title?.trim())       return res.status(400).json({ message: 'Course title is required.' })
-    if (!description?.trim()) return res.status(400).json({ message: 'Please add a description.' })
-    // FIX: removed   if (!subject)  and  if (!grade)  guards — neither field exists in courseSchema.
-    // courseSchema uses 'category' (String, default 'General').  We accept either name from the form.
+const serverError = (res, err) =>
+  res.status(500).json({ message: 'Server error', error: err.message })
 
-    // Map subject → category; pack grade/language into tags so no data is lost
-    const resolvedCategory = (category || subject || 'General').trim()
-
-    const baseTags = tags
-      ? (Array.isArray(tags) ? tags : tags.split(',').map(t => t.trim()).filter(Boolean))
-      : []
-    const extraTags = [grade, language].filter(Boolean).map(v => String(v).trim())
-    const resolvedTags = [...new Set([...extraTags, ...baseTags])]
-
-    const course = await Course.create({
-      title:       title.trim(),
-      description: description.trim(),
-      teacher:     req.user._id,
-      thumbnail:   req.file ? `/uploads/${req.file.filename}` : '',
-      category:    resolvedCategory,                  // FIX: was 'subject' (not in schema)
-      price:       price ? Number(price) : 0,
-      isFree:      isFree === 'true' || isFree === true || !Number(price),
-      tags:        resolvedTags,                      // FIX: was 'grade'/'duration'/'language' (not in schema)
-      isPublished: false,
-    })
-
-    res.status(201).json({ message: 'Course created successfully', course })
-  } catch (err) {
-    console.error('createCourse error:', err.message)
-    res.status(500).json({ message: 'Server error', error: err.message })
-  }
-}
-
-// ── GET /api/teacher/courses ──────────────────────────────────────────────────
-export const getTeacherCourses = async (req, res) => {
-  try {
-    const courses = await Course.find({ teacher: req.user._id })
-      .sort({ createdAt: -1 })
-    res.json({ courses })
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message })
-  }
+// Enrollments in this teacher's courses (student + course populated)
+const loadTeacherEnrollments = async (req, extraFilter = {}) => {
+  const courses = await Course.find({ teacher: teacherId(req) }).select(
+    'title category tags lessons'
+  )
+  const courseMap = new Map(courses.map((c) => [String(c._id), c]))
+  const enrollments = await Enrollment.find({
+    course: { $in: courses.map((c) => c._id) },
+    ...extraFilter,
+  })
+    .populate('student', 'name email createdAt')
+    .lean()
+  return { courseMap, enrollments: enrollments.filter((e) => e.student) }
 }
 
 // ── GET /api/teacher/students ─────────────────────────────────────────────────
+// Every student enrolled in any of this teacher's courses
 export const getTeacherStudents = async (req, res) => {
   try {
-    const courses = await Course.find({ teacher: req.user._id })
-      .populate('enrolledStudents', 'name email createdAt lastActive')
+    const { courseMap, enrollments } = await loadTeacherEnrollments(req)
 
-    const studentMap = new Map()
-    for (const course of courses) {
-      for (const student of course.enrolledStudents) {
-        const id = student._id.toString()
-        if (!studentMap.has(id)) {
-          studentMap.set(id, { ...student.toObject(), enrolledCourses: [] })
-        }
-        studentMap.get(id).enrolledCourses.push({ _id: course._id, title: course.title })
+    const students = new Map()
+    for (const e of enrollments) {
+      const course = courseMap.get(String(e.course))
+      if (!course) continue
+      const id = String(e.student._id)
+
+      if (!students.has(id)) {
+        students.set(id, {
+          _id: e.student._id,
+          name: e.student.name,
+          email: e.student.email,
+          createdAt: e.student.createdAt,
+          lastActive: e.lastAccessedAt,
+          enrolledCourses: [],
+          _percents: [],
+        })
+      }
+      const s = students.get(id)
+      s.enrolledCourses.push({ _id: course._id, title: course.title })
+      s._percents.push(calcProgress(course, e).percent)
+      if (e.lastAccessedAt && (!s.lastActive || e.lastAccessedAt > s.lastActive)) {
+        s.lastActive = e.lastAccessedAt
       }
     }
 
-    res.json([...studentMap.values()])
+    const result = [...students.values()].map(({ _percents, ...s }) => ({
+      ...s,
+      avgProgress: _percents.length
+        ? Math.round(_percents.reduce((a, b) => a + b, 0) / _percents.length)
+        : 0,
+    }))
+
+    res.json(result)
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message })
+    serverError(res, err)
   }
 }
 
 // ── GET /api/teacher/students/:studentId ──────────────────────────────────────
 export const getStudentById = async (req, res) => {
   try {
-    const course = await Course.findOne({
-      teacher:          req.user._id,
-      enrolledStudents: req.params.studentId,
-    }).populate('enrolledStudents', 'name email createdAt lastActive')
+    const { studentId } = req.params
+    if (!isValidId(studentId)) return res.status(404).json({ message: 'Student not found' })
 
-    if (!course) return res.status(404).json({ message: 'Student not found' })
+    const { enrollments } = await loadTeacherEnrollments(req, { student: studentId })
+    if (!enrollments.length) return res.status(404).json({ message: 'Student not found' })
 
-    const student = course.enrolledStudents.find(
-      s => s._id.toString() === req.params.studentId
-    )
-    if (!student) return res.status(404).json({ message: 'Student not found' })
+    const student = enrollments[0].student
+    const lastActive = enrollments
+      .map((e) => e.lastAccessedAt)
+      .filter(Boolean)
+      .sort((a, b) => b - a)[0]
 
-    res.json(student)
+    res.json({
+      _id: student._id,
+      name: student.name,
+      email: student.email,
+      createdAt: student.createdAt,
+      lastActive,
+    })
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message })
+    serverError(res, err)
   }
 }
 
 // ── GET /api/teacher/students/:studentId/courses ──────────────────────────────
 export const getStudentCourses = async (req, res) => {
   try {
-    const courses = await Course.find({
-      teacher:          req.user._id,
-      enrolledStudents: req.params.studentId,
-    }).select('title category tags')   // FIX: was 'title subject grade' — neither exists in schema
+    const { studentId } = req.params
+    if (!isValidId(studentId)) return res.json([])
 
-    const result = courses.map(c => ({
-      _id:        c._id,
-      title:      c.title,
-      subject:    c.category  || 'General', // FIX: schema field is 'category'; was c.subject (undefined)
-      gradeLevel: c.tags?.[0] || '—',       // FIX: grade packed into tags[0]; was c.grade (undefined)
-      progress:   0,
-    }))
+    const { courseMap, enrollments } = await loadTeacherEnrollments(req, { student: studentId })
+
+    const result = enrollments
+      .map((e) => {
+        const course = courseMap.get(String(e.course))
+        if (!course) return null
+        const p = calcProgress(course, e)
+        return {
+          _id: course._id,
+          title: course.title,
+          subject: course.category || 'General',
+          gradeLevel: course.tags?.[0] || '—',
+          progress: p.percent,
+          totalLectures: p.total,
+          completedLectures: p.done,
+          enrolledAt: e.enrolledAt,
+        }
+      })
+      .filter(Boolean)
 
     res.json(result)
   } catch (err) {
-    console.error('getStudentCourses error:', err.message)
-    res.status(500).json({ message: 'Server error', error: err.message })
+    serverError(res, err)
   }
 }
 
 // ── GET /api/teacher/students/:studentId/assignments ──────────────────────────
+// This teacher's assignments in the courses the student is enrolled in
 export const getStudentAssignments = async (req, res) => {
   try {
-    res.json([])
+    const { studentId } = req.params
+    if (!isValidId(studentId)) return res.json([])
+
+    const { enrollments } = await loadTeacherEnrollments(req, { student: studentId })
+    if (!enrollments.length) return res.json([])
+
+    // Course assignments for the student's courses + this teacher's general ones
+    const assignments = await Assignment.find({
+      teacher: teacherId(req),
+      $or: [{ course: { $in: enrollments.map((e) => e.course) } }, { course: null }],
+    })
+      .populate('course', 'title')
+      .sort({ dueDate: -1 })
+      .lean()
+
+    const subs = await Submission.find({
+      student: studentId,
+      assignment: { $in: assignments.map((a) => a._id) },
+    }).lean()
+    const subMap = new Map(subs.map((x) => [String(x.assignment), x]))
+
+    res.json(
+      assignments
+        .map((a) => {
+          const sub = subMap.get(String(a._id))
+          return {
+            _id: a._id,
+            title: a.title,
+            courseTitle: a.course ? a.course.title : a.courseName || 'General',
+            dueDate: a.dueDate,
+            totalMarks: a.totalMarks,
+            submission: sub
+              ? {
+                  submittedAt: sub.submittedAt,
+                  score: sub.grade != null ? sub.grade : null,
+                  feedback: sub.feedback || '',
+                }
+              : null,
+          }
+        })
+    )
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message })
+    serverError(res, err)
   }
 }
 
 // ── GET /api/teacher/notifications ───────────────────────────────────────────
+// Latest enrollments and assignment submissions in this teacher's courses
 export const getTeacherNotifications = async (req, res) => {
   try {
-    const courses = await Course.find({ teacher: req.user._id })
-      .select('title enrolledStudents createdAt updatedAt')
-      .sort({ updatedAt: -1 })
-      .limit(10)
+    const courses = await Course.find({ teacher: teacherId(req) }).select('title')
+    const courseIds = courses.map((c) => c._id)
+    const myAssignmentIds = (await Assignment.find({ teacher: teacherId(req) }).select('_id').lean()).map((a) => a._id)
 
-    const notifications = courses.map(c => ({
-      _id:       c._id,
-      type:      'enrollment',
-      message:   `${c.enrolledStudents.length} student${c.enrolledStudents.length !== 1 ? 's' : ''} enrolled in "${c.title}"`,
-      link:      `/teacher/courses/${c._id}`,
-      read:      false,
-      createdAt: c.updatedAt || c.createdAt,
-    }))
+    const [enrollments, submissions] = await Promise.all([
+      Enrollment.find({ course: { $in: courseIds } })
+        .populate('student', 'name')
+        .populate('course', 'title')
+        .sort({ enrolledAt: -1 })
+        .limit(10)
+        .lean(),
+      Submission.find({ assignment: { $in: myAssignmentIds } })
+        .populate('student', 'name')
+        .populate('assignment', 'title')
+        .sort({ submittedAt: -1 })
+        .limit(10)
+        .lean(),
+    ])
+
+    const notifications = [
+      ...enrollments
+        .filter((e) => e.student && e.course)
+        .map((e) => ({
+          _id: e._id,
+          type: 'enrollment',
+          message: `${e.student.name} enrolled in "${e.course.title}"`,
+          link: `/teacher/courses/${e.course._id}`,
+          read: false,
+          createdAt: e.enrolledAt,
+        })),
+      ...submissions
+        .filter((x) => x.student && x.assignment)
+        .map((x) => ({
+          _id: x._id,
+          type: 'submission',
+          message: `${x.student.name} submitted "${x.assignment.title}"`,
+          link: '/teacher/assignments',
+          read: false,
+          createdAt: x.submittedAt,
+        })),
+    ]
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 10)
 
     res.json({ notifications, unreadCount: notifications.length })
   } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message })
+    serverError(res, err)
   }
 }

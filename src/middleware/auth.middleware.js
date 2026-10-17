@@ -21,3 +21,11 @@ export const protect = (req, res, next) => {
     return res.status(401).json({ message: 'Invalid token' })
   }
 }
+
+// Use after protect:  router.get('/x', protect, requireRole('student'), handler)
+export const requireRole = (...roles) => (req, res, next) => {
+  if (!req.user || !roles.includes(req.user.role)) {
+    return res.status(403).json({ message: 'You do not have access to this resource' })
+  }
+  next()
+}

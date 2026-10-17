@@ -1,4 +1,7 @@
 import Course from '../course/course.model.js'
+import Enrollment from '../enrollment/enrollment.model.js'
+import Assignment from '../assignment/assignment.model.js'
+import Submission from '../assignment/submission.model.js'
 
 const sendError = (res, err) => {
   if (err.name === 'CastError') {
@@ -86,6 +89,10 @@ export const deleteCourse = async (req, res) => {
       teacher: req.user.id,
     })
     if (!course) return res.status(404).json({ message: 'Course not found' })
+    // Remove the enrollment records of the deleted course too
+    await Enrollment.deleteMany({ course: course._id })
+    await Submission.deleteMany({ course: course._id })
+    await Assignment.deleteMany({ course: course._id })
     res.status(200).json({ message: 'Course deleted successfully' })
   } catch (err) {
     sendError(res, err)
