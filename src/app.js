@@ -9,6 +9,7 @@ import courseRoutes from "./modules/course/course.routes.js";
 import teacherRoutes from './modules/teacher/teacher.routes.js';
 import studentRoutes from './modules/student/student.routes.js';
 import { teacherAssignmentRoutes, studentAssignmentRoutes } from './modules/assignment/assignment.routes.js';
+import quizRoutes from "./modules/quiz/quiz.routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +23,7 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
 // Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/student/quiz", quizRoutes);
 app.use("/api/student", aiRoutes);
 app.use("/api/student", studentRoutes);
 app.use("/api/student", studentAssignmentRoutes);

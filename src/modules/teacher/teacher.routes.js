@@ -3,7 +3,7 @@ import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
-import { protect } from '../../middleware/auth.middleware.js'
+import { protect, requireRole } from '../../middleware/auth.middleware.js'
 import {
   getTeacherStudents,
   getStudentById,
@@ -60,6 +60,6 @@ router.get('/students/:studentId/courses',      protect, getStudentCourses)
 router.get('/students/:studentId/assignments',  protect, getStudentAssignments)
 
 // Notifications
-router.get('/notifications',                    protect, getTeacherNotifications)
+router.get('/notifications', protect, requireRole('teacher'), getTeacherNotifications)
 
 export default router
