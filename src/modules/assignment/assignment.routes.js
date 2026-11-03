@@ -1,5 +1,6 @@
 import express from 'express'
 import { protect, requireRole } from '../../middleware/auth.middleware.js'
+import { uploadQuestionImages, uploadAnswerImages } from '../../middleware/upload.middleware.js'
 import {
   listTeacherAssignments,
   createAssignment,
@@ -15,7 +16,8 @@ import {
 export const teacherAssignmentRoutes = express.Router()
 teacherAssignmentRoutes.use('/assignments', protect, requireRole('teacher'))
 teacherAssignmentRoutes.get('/assignments', listTeacherAssignments)
-teacherAssignmentRoutes.post('/assignments', createAssignment)
+// multipart form (fields + optional "images"); plain JSON requests still work too
+teacherAssignmentRoutes.post('/assignments', uploadQuestionImages, createAssignment)
 teacherAssignmentRoutes.patch('/assignments/:id/status', setAssignmentStatus)
 teacherAssignmentRoutes.delete('/assignments/:id', deleteAssignment)
 teacherAssignmentRoutes.put('/assignments/:id/submissions/:submissionId/grade', gradeSubmission)
@@ -24,5 +26,5 @@ teacherAssignmentRoutes.put('/assignments/:id/submissions/:submissionId/grade', 
 export const studentAssignmentRoutes = express.Router()
 studentAssignmentRoutes.use(['/assignments', '/grades'], protect, requireRole('student'))
 studentAssignmentRoutes.get('/assignments', listStudentAssignments)
-studentAssignmentRoutes.post('/assignments/:id/submit', submitAssignment)
+studentAssignmentRoutes.post('/assignments/:id/submit', uploadAnswerImages, submitAssignment)
 studentAssignmentRoutes.get('/grades', listStudentGrades)

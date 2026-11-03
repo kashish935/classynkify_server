@@ -32,3 +32,5 @@ build/
 # 🗂 Misc
 *.tmp
 *.pid
+
+uploads/
