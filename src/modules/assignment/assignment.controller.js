@@ -3,6 +3,7 @@ import Submission from './submission.model.js'
 import Course from '../course/course.model.js'
 import Enrollment from '../enrollment/enrollment.model.js'
 import { isValidId } from '../enrollment/enrollment.service.js'
+import { removeUploads } from '../../middleware/upload.middleware.js'
 import {
   parseDueDate,
   isOpenForSubmission,
@@ -20,6 +21,7 @@ const teacherShape = (a, subs = []) => ({
   _id: a._id,
   title: a.title,
   description: a.description,
+  questionImages: a.questionImages || [],
   course: a.course
     ? { _id: a.course._id, title: a.course.title }
     : { _id: 'other', title: a.courseName || 'General' },
@@ -32,6 +34,7 @@ const teacherShape = (a, subs = []) => ({
     student: { _id: s.student._id, name: s.student.name, email: s.student.email },
     submittedAt: s.submittedAt,
     content: s.content,
+    images: s.images || [],
     grade: s.grade != null ? s.grade : null,
     feedback: s.feedback || '',
   })),
@@ -71,7 +74,9 @@ export const listTeacherAssignments = async (req, res) => {
   }
 }
 
-// POST /api/teacher/assignments   { title, courseId, description, dueDate, totalMarks }
+// POST /api/teacher/assignments
+// multipart: { title, courseId, courseName, description, dueDate, totalMarks, images[] }
+// (the upload middleware has already saved the photos and set req.uploadedImages)
 export const createAssignment = async (req, res) => {
   try {
     const { title, courseId, courseName, description, dueDate, totalMarks } = req.body
@@ -105,6 +110,7 @@ export const createAssignment = async (req, res) => {
     const a = await Assignment.create({
       title: title.trim(),
       description: description.trim(),
+      questionImages: req.uploadedImages || [],
       course: course ? course._id : null,
       courseName: isOther ? courseName.trim().slice(0, 80) : '',
       teacher: uid(req),
@@ -142,8 +148,15 @@ export const deleteAssignment = async (req, res) => {
   try {
     const a = await findOwn(req)
     if (!a) return res.status(404).json({ message: 'Assignment not found' })
+
+    // Remember the photos so they can be deleted from disk too
+    const subs = await Submission.find({ assignment: a._id }).select('images').lean()
+    const files = [...(a.questionImages || []), ...subs.flatMap((s) => s.images || [])]
+
     await Submission.deleteMany({ assignment: a._id })
     await a.deleteOne()
+    await removeUploads(files)
+
     res.json({ message: 'Assignment deleted' })
   } catch (err) {
     fail(res, err)
@@ -191,13 +204,17 @@ export const listStudentAssignments = async (req, res) => {
   }
 }
 
-// POST /api/student/assignments/:id/submit   { content }
+// POST /api/student/assignments/:id/submit
+// multipart: { content, images[] }, needs text, photos, or both
 export const submitAssignment = async (req, res) => {
   try {
     if (!isValidId(req.params.id)) return res.status(404).json({ message: 'Assignment not found' })
 
     const content = String(req.body.content || '').trim()
-    if (!content) return res.status(400).json({ message: 'Please write your answer first.' })
+    const images = req.uploadedImages || []
+    if (!content && !images.length) {
+      return res.status(400).json({ message: 'Please write your answer or attach a photo first.' })
+    }
 
     const a = await Assignment.findById(req.params.id)
     if (!a) return res.status(404).json({ message: 'Assignment not found' })
@@ -217,15 +234,25 @@ export const submitAssignment = async (req, res) => {
       return res.status(400).json({ message: 'This assignment is closed for submissions.' })
     }
 
+    let submission
     try {
-      await Submission.create({ assignment: a._id, course: a.course || null, student: uid(req), content })
+      submission = await Submission.create({
+        assignment: a._id,
+        course: a.course || null,
+        student: uid(req),
+        content,
+        images,
+      })
     } catch (err) {
       if (err.code === 11000) {
         return res.status(400).json({ message: 'You have already submitted this assignment.' })
       }
       throw err
     }
-    res.status(201).json({ message: 'Assignment submitted' })
+    res.status(201).json({
+      message: 'Assignment submitted',
+      submission: { content, images, submittedAt: submission.submittedAt },
+    })
   } catch (err) {
     fail(res, err)
   }

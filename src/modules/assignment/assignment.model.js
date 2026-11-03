@@ -4,6 +4,8 @@ const assignmentSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true },
     description: { type: String, required: true, trim: true },
+    // JPG/PNG photos of the question paper, uploaded by the teacher
+    questionImages: { type: [String], default: [] },
     // A real course, OR null for a general assignment ("Other") labelled by courseName
     course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null, index: true },
     courseName: { type: String, trim: true, default: '' },
